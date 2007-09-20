@@ -1,5 +1,5 @@
 % @author Stephen Marsh
-% @copyright 2007 Stephen Marsh
+% @copyright 2007 Stephen Marsh freeyourmind ++ [$@|gmail.com]
 % @doc plists is a drop-in replacement for module
 % <a href="http://www.erlang.org/doc/man/lists.html">lists</a>,
 % making most list operations parallel. It can operate on each element in
