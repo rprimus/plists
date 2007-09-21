@@ -89,13 +89,10 @@ test_all(Malt) ->
     true = plists:all(fun even/1, [2,4,6,8], Malt),
     false = plists:all(fun even/1, [2,4,5,8], Malt).
 
-even (X) ->
-    case X rem 2 of
-	0 ->
-	    true;
-	1 ->
-	    false
-    end.
+even(X) when X rem 2 =:= 0 ->
+    true;
+even(_) ->
+    false.
 
 test_any(Malt) ->
     true = plists:any(fun even/1, [1,2,3,4,5], Malt),
@@ -127,7 +124,10 @@ test_foreach(_Malt) ->
     whatever.
 
 test_map(Malt) ->
-    [2,4,6,8,10] = plists:map(fun (X) -> 2*X end, [1,2,3,4,5], Malt).
+    [2,4,6,8,10] = plists:map(fun (X) -> 2*X end, [1,2,3,4,5], Malt),
+    % edge cases
+    [2] = plists:map(fun (X) -> 2*X end, [1], Malt),
+    [] = plists:map(fun (X) -> 2*X end, [], Malt).
 
 test_partition(Malt) ->
     {[2,4,6],[1,3,5]} = plists:partition(fun even/1, [1,2,3,4,5,6], Malt).
@@ -137,7 +137,9 @@ test_sort(Malt) ->
 		  A =< B
 	  end,
     [1,2,2,3,4,5,5] = plists:sort(Fun, [2,4,5,1,2,5,3], Malt),
-    [1,2,2,3,4,5,5] = plists:sort(Fun, [2,4,5,1,2,5,3], Malt).
+    % edge cases
+    [1] = plists:sort(Fun, [1], Malt),
+    [] = plists:sort(Fun, [], Malt).
 
 test_usort(Malt) ->
     Fun = fun (A, B) ->
