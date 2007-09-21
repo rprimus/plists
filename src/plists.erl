@@ -259,14 +259,16 @@ fold(Fun, Fuse, InitAcc, List, Malt) ->
     Fun2 = fun (L) -> lists:foldl(Fun, InitAcc, L) end,
     runmany(Fun2, Fuse, List, Malt).
 
-% @doc Same semantics as in module
-% <a href="http://www.erlang.org/doc/man/lists.html">lists</a>.
+% @doc Similiar to foreach in module
+% <a href="http://www.erlang.org/doc/man/lists.html">lists</a>
+% except it makes no guarantee about the order it processes list elements.
 % @spec (Fun, List) -> void()
 foreach(Fun, List) ->
     foreach(Fun, List, 1).
 
-% @doc Same semantics as in module
-% <a href="http://www.erlang.org/doc/man/lists.html">lists</a>.
+% @doc Similiar to foreach in module
+% <a href="http://www.erlang.org/doc/man/lists.html">lists</a>
+% except it makes no guarantee about the order it processes list elements.
 % @spec (Fun, List, Malt) -> void()
 foreach(Fun, List, Malt) ->
     runmany(fun (L) ->
@@ -423,7 +425,7 @@ mapreduce(MapFunc, List, MapMalt) ->
 			   Reducer ! die,
 			   exit(Reason)
 		   end,
-    Reducer ! {done, SentMessages},
+    Reducer ! {mappers, done, SentMessages},
     Results = receive
 		  {Reducer, Results2} ->
 		      Results2;
@@ -440,7 +442,7 @@ reducer(Parent, Dict, NumReceived) ->
     receive
 	die ->
 	    nil;
-	{done, NumReceived} ->
+	{mappers, done, NumReceived} ->
 	    Parent ! {self (), Dict};
 	Keys  ->
 	    reducer(Parent, add_keys(Dict, Keys), NumReceived + 1)
@@ -663,10 +665,9 @@ cluster_runmany(Fun, Fuse, [Task|TaskList], [N|Nodes], Running, Results) ->
 cluster_runmany(Fun, Fuse, TaskList, Nodes, Running, Results) when length(Running) > 0 ->
     receive
 	{Pid, Num, Result} ->
-	    % throw out the normal exit message
-	    receive {'DOWN', _, _, Pid, normal} ->
-		    nil;
-		    {'DOWN', _, _, Pid, noproc}->
+	    % throw out the exit message, Reason should be
+	    % normal, noproc, or noconnection
+	    receive {'DOWN', _, _, Pid, _Reason} ->
 		    nil
 	    end,
 	    {Running2, FinishedNode, _} = delete_running(Pid, Running, []),
