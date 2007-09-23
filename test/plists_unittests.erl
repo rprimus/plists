@@ -6,8 +6,9 @@ do_tests() ->
     do_tests(4),
     do_tests({processes, 2}),
     do_tests([4, {processes, 2}]),
+    do_tests({processes, schedulers}),
     do_tests({timeout, 4000}),
-    do_tests({nodes, [{node(), 2}, node()]}),
+    do_tests({nodes, [{node(), 2}, node(), {node(), schedulers}]}),
     do_tests([{nodes, [{node(), 2}, node()]}, {timeout, 4000}, 4]),
     io:format("Ignore the ERROR REPORTs above, they are supposed to be there.~n"),
     io:format("all tests passed :)~n").
