@@ -622,7 +622,7 @@ schedulers_on_node(Node) ->
 
 determine_schedulers(Node) ->
     Parent = self(),
-    Child = spawn(fun () ->
+    Child = spawn(Node, fun () ->
 		  Parent ! {self(), erlang:system_info(schedulers)}
 	  end),
     erlang:monitor(process, Child),
@@ -780,17 +780,17 @@ normal_cleanup(Pid) ->
 	    ok
     end.
 
-fuse({reverse, _Fuse}, []) ->
-    [];
-fuse({reverse, _Fuse}, [R]) ->
-    R;
-fuse({reverse, Fuse}=F, [H|Results]) ->
-    Fuse(H, fuse(F, Results));
-fuse(Fuse, [R1|Results]) ->
-    fuse(Fuse, Results, R1);
+% edge case
 fuse(_, []) ->
-    [].
+    [];
+fuse({reverse, _}=Fuse, Results) ->
+    [RL|ResultsR] = lists:reverse(Results),
+    fuse(Fuse, ResultsR, RL);
+fuse(Fuse, [R1|Results]) ->
+    fuse(Fuse, Results, R1).
 
+fuse({reverse, FuseFunc}=Fuse, [R2|Results], R1) ->
+    fuse(Fuse, Results, FuseFunc(R2, R1));
 fuse(Fuse, [R2|Results], R1) ->
     fuse(Fuse, Results, Fuse(R1, R2));
 fuse(_, [], R) ->
