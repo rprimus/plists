@@ -27,8 +27,10 @@
 %
 % Malt = MaltComponent | [MaltComponent]<br/>
 % MaltComponent = SubListSize::integer() | {processes, integer()} |
+% {processes, schedulers} |
 % {timeout, Milliseconds::integer()} | {nodes, [NodeSpec]}<br/>
-% NodeSpec = Node::atom() | {Node::atom(), NumProcesses::integer()}
+% NodeSpec = Node::atom() | {Node::atom(), NumProcesses::integer()} |
+% {Node::atom(), schedulers}
 %
 % An integer can be given to specify the exact size for
 % sublists. 1 is a good choice for IO-bound operations and when
@@ -45,7 +47,10 @@
 %
 % You can use {processes, X} to have the list processed
 % by X processes on the local machine. A good choice for X is the number of
-% lines of execution (cores) the machine provides.
+% lines of execution (cores) the machine provides. This can be done
+% automatically with {processes, schedulers}, which sets
+% the number of processes to the number of schedulers in the erlang virtual
+% machine (probably equal to the number of cores).
 %
 % {timeout, Milliseconds} specifies a timeout. This is a timeout for the entire
 % operation, both operating on the sublists and combining the results.
@@ -54,10 +59,16 @@
 % {nodes, NodeList} specifies that the operation should be done across nodes.
 % Every element of NodeList is of the form {NodeName, NumProcesses} or
 % NodeName, which means the same as {NodeName, 1}. plists runs
-% NumProcesses process on NodeName concurrently. A good choice for
-% NumProcesses is the number of lines of execution (cores) a machine provides
-% plus one. This ensures the machine is completely busy even when
-% fetching a new sublist. plists is able to recover if a node goes down.
+% NumProcesses processes on NodeName concurrently. A good choice for
+% NumProcesses is the number of lines of execution (cores) a node provides
+% plus one. This ensures the node is completely busy even when
+% fetching a new sublist. This can be done automatically with
+% {NodeName, schedulers}, in which case
+% plists uses a cached value if it has one, and otherwise finds the number of
+% schedulers in the remote node and adds one. This will ensure at least one
+% busy process per core (assuming the node has a scheduler for each core).
+% 
+% plists is able to recover if a node goes down.
 % If all nodes go down, exit(allnodescrashed) is evaluated.
 %
 % Any of the above may be used as a malt, or may be combined into a list.
@@ -73,6 +84,10 @@
 % % split the list into two sublists and process in two processes<br/>
 % {processes, 2}
 %
+% % split the list into X sublists and process in X processes,<br/>
+% % where X is the number of cores in the machine<br/>
+% {processes, schedulers}
+%
 % % split the list into 10-element sublists and process in two processes<br/>
 % [10, {processes, 2}]
 %
@@ -86,6 +101,9 @@
 % % desktop and a single-core laptop. Assumes that the list should be<br/>
 % % split into 1-element sublists.<br/>
 % {nodes, [{apple@desktop, 3}, {orange@laptop, 2}]}
+%
+% Like above, but makes plists figure out how many processes to use.
+% {nodes, [{apple@desktop, schedulers}, {orange@laptop, schedulers}]}
 %
 % % Gives apple and orange three seconds to process the list as<br/>
 % % 100-element sublists.<br/>
@@ -218,9 +236,9 @@ filter(Fun, List, Malt) ->
     runmany(fun (L) ->
 		    lists:filter(Fun, L)
 	    end,
-	    fun (A1, A2) ->
+	    {reverse, fun (A1, A2) ->
 		    A1 ++ A2
-	    end,
+	    end},
 	    List, Malt).
 
 % Note that with parallel fold there is not foldl and foldr,
@@ -292,9 +310,9 @@ map(Fun, List, Malt) ->
     runmany(fun (L) ->
 		    lists:map(Fun, L)
 	    end,
-	    fun (A1, A2) ->
+	    {reverse, fun (A1, A2) ->
 		    A1 ++ A2
-	    end,
+	    end},
 	    List, Malt).
 
 % @doc Same semantics as in module
@@ -310,9 +328,9 @@ partition(Fun, List, Malt) ->
     runmany(fun (L) ->
 		    lists:partition(Fun, L)
 	    end,
-	    fun ({True1, False1}, {True2, False2}) ->
+	    {reverse, fun ({True1, False1}, {True2, False2}) ->
 		    {True1 ++ True2, False1 ++ False2}
-	    end,
+	    end},
 	    List, Malt).
 
 % SORTMALT needs to be tuned
@@ -477,8 +495,12 @@ runmany(Fun, Fuse, List) ->
 % ways this can operate, lineraly and recursively. If Fuse is a function,
 % a fuse is done linearly left-to-right on the sublists, the results
 % of processing the first and second sublists being passed to Fuse, then
-% the result of that fuse and processing the third sublits, and so on.
-% This method preserves the original order of the lists elements.
+% the result of the first fuse and processing the third sublits, and so on. If
+% Fuse is {reverse, FuseFunc}, then a fuse is done right-to-left, the results
+% of processing the second-to-last and last sublists being passed to FuseFunc,
+% then the results of processing the third-to-last sublist and
+% the results of the first fuse, and and so forth.
+% Both methods preserve the original order of the lists elements.
 %
 % To do a recursive fuse, pass Fuse as {recursive, FuseFunc}.
 % The recursive fuse makes no guarantee about the order the results of
@@ -498,43 +520,30 @@ runmany(Fun, Fuse, List) ->
 % Fuse = FuseFunc | {recursive, FuseFunc}
 % FuseFunc = (term(), term()) -> term()
 runmany(Fun, Fuse, List, Malt) when is_list(Malt) ->
-    % If the sublist size wasn't specified, assume a default.
-    case lists:any(fun (X) when is_integer(X) ->
-			   true;
-		       (_) ->
-			   false
-		   end, Malt) of
-	true ->
-	    runmany(Fun, Fuse, List, local, Malt);
-	false ->
-	    case lists:foldl(fun({processes, X}, _A) ->
-				     X;
-				(_, A) ->
-				     A
-			     end, no_processes, Malt) of
-		no_processes ->
-		    runmany(Fun, Fuse, List, local, [1|Malt]);
-		X ->
-		    % split list into X sublists.
-		    L = length(List),
-		    case L rem X of
-			0 ->
-			    runmany(Fun, Fuse, List, local, [L div X|Malt]);
-			_ ->
-			    runmany(Fun, Fuse, List, local, [L div X + 1|Malt])
-		    end
-	    end
-    end;
+    runmany(Fun, Fuse, List, local, no_split, Malt);
 runmany(Fun, Fuse, List, Malt) ->
     runmany(Fun, Fuse, List, [Malt]).
 
-runmany(Fun, Fuse, List, Nodes, [MaltTerm|Malt]) when is_integer(MaltTerm) ->
-    runmany(Fun, Fuse, splitmany(List, MaltTerm), Nodes, Malt);
+runmany(Fun, Fuse, List, Nodes, no_split, [MaltTerm|Malt]) when is_integer(MaltTerm) ->
+    runmany(Fun, Fuse, List, Nodes, MaltTerm, Malt);
+% run a process for each scheduler
+runmany(Fun, Fuse, List, local, Split, [{processes, schedulers}|Malt]) ->
+    S = erlang:system_info(schedulers),
+    runmany(Fun, Fuse, List, local, Split, [{processes, S}|Malt]);
+% Split the list into X sublists, where X is the number of processes
+runmany(Fun, Fuse, List, local, no_split, [{processes, X}|_]=Malt) ->
+    L = length(List),
+    case L rem X of
+	0 ->
+	    runmany(Fun, Fuse, List, local, L div X, Malt);
+	_ ->
+	    runmany(Fun, Fuse, List, local, L div X + 1, Malt)
+    end;
 % run X process on local machine
-runmany(Fun, Fuse, List, local, [{processes, X}|Malt]) ->
+runmany(Fun, Fuse, List, local, Split, [{processes, X}|Malt]) ->
     Nodes = lists:duplicate(X, node()),
-    runmany(Fun, Fuse, List, Nodes, Malt);
-runmany(Fun, Fuse, List, Nodes, [{timeout, X}|Malt]) ->
+    runmany(Fun, Fuse, List, Nodes, Split, Malt);
+runmany(Fun, Fuse, List, Nodes, Split, [{timeout, X}|Malt]) ->
     Parent = self(),
     Timer = spawn(fun () ->
 			  receive
@@ -548,7 +557,7 @@ runmany(Fun, Fuse, List, Nodes, [{timeout, X}|Malt]) ->
 				  end
 			  end
 		  end),
-    Ans = try runmany(Fun, Fuse, List, Nodes, Malt)
+    Ans = try runmany(Fun, Fuse, List, Nodes, Split, Malt)
 	  catch
 	      % we really just want the after block, the syntax
 	      % makes this catch necessary.
@@ -559,22 +568,30 @@ runmany(Fun, Fuse, List, Nodes, [{timeout, X}|Malt]) ->
 	    cleanup_timer(Timer)
 	  end,
     Ans;
-runmany(Fun, Fuse, List, local, [{nodes, NodeList}|Malt]) ->
-    Nodes = lists:foldl(fun ({Node, X}, A) ->
+runmany(Fun, Fuse, List, local, Split, [{nodes, NodeList}|Malt]) ->
+    Nodes = lists:foldl(fun ({Node, schedulers}, A) ->
+				X = schedulers_on_node(Node) + 1,
+				lists:reverse(lists:duplicate(X, Node), A);
+			    ({Node, X}, A) ->
 				lists:reverse(lists:duplicate(X, Node), A);
 			    (Node, A) ->
 				[Node|A]
 			end,
 			[], NodeList),
-    runmany(Fun, Fuse, List, Nodes, Malt);
+    runmany(Fun, Fuse, List, Nodes, Split, Malt);
 % local recursive fuse, for when we weren't invoked with {processes, X}
 % or {nodes, NodeList}. Degenerates recursive fuse into linear fuse.
-runmany(Fun, {recursive, Fuse}, List, local, []) ->
-    runmany(Fun, Fuse, List, local, []);
-runmany(Fun, Fuse, List, local, []) ->
-    local_runmany(Fun, Fuse, List);
-runmany(Fun, Fuse, List, Nodes, []) ->
-    cluster_runmany(Fun, Fuse, List, Nodes).
+runmany(Fun, {recursive, Fuse}, List, local, Split, []) ->
+    runmany(Fun, Fuse, List, local, Split, []);
+% by default, operate on each element seperately
+runmany(Fun, Fuse, List, Nodes, no_split, []) ->
+    runmany(Fun, Fuse, List, Nodes, 1, []);
+runmany(Fun, Fuse, List, local, Split, []) ->
+    List2 = splitmany(List, Split),
+    local_runmany(Fun, Fuse, List2);
+runmany(Fun, Fuse, List, Nodes, Split, []) ->
+    List2 = splitmany(List, Split),
+    cluster_runmany(Fun, Fuse, List2, Nodes).
 
 cleanup_timer(Timer) ->
     receive
@@ -582,6 +599,42 @@ cleanup_timer(Timer) ->
 	    cleanup_timer(Timer);
 	{timerstopped, Timer} ->
 	    nil
+    end.
+
+schedulers_on_node(Node) ->
+    case get(plists_schedulers_on_nodes) of
+	undefined ->
+	    X = determine_schedulers(Node),
+	    put(plists_schedulers_on_nodes,
+		dict:store(Node, X, dict:new())),
+	    X;
+	Dict ->
+	    case dict:is_key(Node, Dict) of
+		true ->
+		    dict:fetch(Node, Dict);
+		false ->
+		    X = determine_schedulers(Node),
+		    put(plists_schedulers_on_nodes,
+			dict:store(Node, X, Dict)),
+		    X
+	    end
+    end.
+
+determine_schedulers(Node) ->
+    Parent = self(),
+    Child = spawn(fun () ->
+		  Parent ! {self(), erlang:system_info(schedulers)}
+	  end),
+    erlang:monitor(process, Child),
+    receive
+	{Child, X} ->
+	    receive
+		{'DOWN', _, _, Child, _Reason} ->
+		    nil
+	    end,
+	    X;
+	{'DOWN', _, _, Child, Reason} when Reason =/= normal ->
+	    0
     end.
 
 % local runmany, for when we weren't invoked with {processes, X}
@@ -727,6 +780,12 @@ normal_cleanup(Pid) ->
 	    ok
     end.
 
+fuse({reverse, _Fuse}, []) ->
+    [];
+fuse({reverse, _Fuse}, [R]) ->
+    R;
+fuse({reverse, Fuse}=F, [H|Results]) ->
+    Fuse(H, fuse(F, Results));
 fuse(Fuse, [R1|Results]) ->
     fuse(Fuse, Results, R1);
 fuse(_, []) ->
