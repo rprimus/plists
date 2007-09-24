@@ -161,7 +161,7 @@
 -export([all/2, all/3, any/2, any/3, filter/2, filter/3,
 fold/3, fold/4, fold/5, foreach/2, foreach/3, map/2, map/3,
 partition/2, partition/3, sort/1, sort/2, sort/3,
-usort/1, usort/2, usort/3, mapreduce/2, mapreduce/3,
+usort/1, usort/2, usort/3, mapreduce/2, mapreduce/3, mapreduce/5,
 runmany/3, runmany/4]).
 
 % Everything here is defined in terms of runmany.
@@ -409,28 +409,38 @@ usort(Fun, List, Malt) ->
 mapreduce(MapFunc, List) ->
     mapreduce(MapFunc, List, 1).
 
+% Like below, but uses a default reducer that collects all
+% {Key, Value} pairs into a
+% <a href="http://www.erlang.org/doc/man/dict.html">dict</a>,
+% with values {Key, [Value1, Value2...]}.
+% This dict is returned as the result.
+mapreduce(MapFunc, List, MapMalt) ->
+    mapreduce(MapFunc, List, dict:new(), fun add_key/3, MapMalt).
+
 % @doc This is a very basic mapreduce. You won't write a Google-rivaling
 % search engine with it. It has no equivalent in lists. Each
 % element in the list is run through the MapFunc, which produces either
 % a {Key, Value} pair, or a lists of key value pairs, or a list of lists of
 % key value pairs...etc. A reducer process runs in parallel with the mapping
-% processes, collecting the key value pairs into a
-% <a href="http://www.erlang.org/doc/man/dict.html">dict</a>. This dict
-% is returned as the result.
+% processes, collecting the key value pairs. It starts with a state given by
+% InitState, and for each {Key, Value} pair that it receives it invokes
+% ReduceFunc(OldState, Key, Value) to compute its new state. mapreduce returns
+% the reducer's final state.
 %
 % MapMalt is the malt for the mapping operation, with a default value of 1,
 % meaning each element of the list is mapped by a seperate process.
 %
 % mapreduce requires OTP R11B, or it may leave monitoring messages in the
 % message queue.
-% @spec (MapFunc, List, MapMalt) -> Dict
+% @spec (MapFunc, List, InitState, ReduceFunc, MapMalt) -> Dict
 % MapFunc = (term()) -> DeepListOfKeyValuePairs
 % DeepListOfKeyValuePairs = [DeepListOfKeyValuePairs] | {Key, Value}
-mapreduce(MapFunc, List, MapMalt) ->
+% ReduceFunc = (OldState::term(), Key::term(), Value::term() -> NewState::term()
+mapreduce(MapFunc, List, InitState, ReduceFunc, MapMalt) ->
     Parent = self(),
     {Reducer, ReducerRef} =
 	erlang:spawn_monitor(fun () ->
-				     reducer(Parent, dict:new(), 0)
+				     reducer(Parent, 0, InitState, ReduceFunc)
 			     end),
     MapFunc2 = fun (L) ->
 		       Reducer ! lists:map(MapFunc, L),
@@ -456,27 +466,30 @@ mapreduce(MapFunc, List, MapMalt) ->
     end,
     Results.
 
-reducer(Parent, Dict, NumReceived) ->
+reducer(Parent, NumReceived, State, Func) ->
     receive
 	die ->
 	    nil;
 	{mappers, done, NumReceived} ->
-	    Parent ! {self (), Dict};
+	    Parent ! {self (), State};
 	Keys  ->
-	    reducer(Parent, add_keys(Dict, Keys), NumReceived + 1)
+	    reducer(Parent, NumReceived + 1, each_key(State, Func, Keys), Func)
     end.
 
-add_keys(Dict, [{Key, Value}|Keys]) ->
+each_key(State, Func, {Key, Value}) ->
+    Func(State, Key, Value);
+each_key(State, Func, [List|Keys]) ->
+    each_key(each_key(State, Func, List), Func, Keys);
+each_key(State, _, []) ->
+    State.
+
+add_key(Dict, Key, Value) ->
     case dict:is_key(Key, Dict) of
 	true ->
-	    add_keys(dict:append(Key, Value, Dict), Keys);
+	    dict:append(Key, Value, Dict);
 	false ->
-	    add_keys(dict:store(Key, [Value], Dict), Keys)
-    end;
-add_keys(Dict, [List|Keys]) when is_list(List) ->
-    add_keys(add_keys(Dict, List), Keys);
-add_keys(Dict, []) ->
-    Dict.
+	    dict:store(Key, [Value], Dict)
+    end.
 
 % @doc Like below, but assumes a Malt of 1,
 % meaning each element of the list is processed by a seperate process.
