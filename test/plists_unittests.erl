@@ -1,5 +1,31 @@
 -module(plists_unittests).
--export([do_tests/0, do_tests/1]).
+%-export([run/0]).
+-compile([export_all]).
+
+setup_network() ->
+    Cookie = atom_to_list(erlang:get_cookie()),
+    open_port({spawn, "erl -pa ../ebin -noshell -sname second_node@localhost -setcookie " ++ Cookie}, []),
+    wait_until_running().
+
+wait_until_running() ->
+    case net_adm:ping(second_node@localhost) of
+	pong ->
+	    ok;
+	pang ->
+	    timer:sleep(20),
+	    wait_until_running()
+    end.
+
+close_network() ->
+    rpc:call(second_node@localhost, init, stop, []).
+
+run() ->
+    setup_network(),
+    try do_tests()
+    catch never -> never % junk so we can have after
+    after
+	    close_network()
+    end.
 
 do_tests() ->
     do_tests(1),
@@ -9,7 +35,9 @@ do_tests() ->
     do_tests({processes, schedulers}),
     do_tests({timeout, 4000}),
     do_tests({nodes, [{node(), 2}, node(), {node(), schedulers}]}),
-    do_tests([{nodes, [{node(), 2}, node()]}, {timeout, 4000}, 4]),
+    do_tests({nodes, [{second_node@localhost, 2}, second_node@localhost,
+		      {second_node@localhost, schedulers}]}),
+    do_tests([{nodes, [{node(), 2}, second_node@localhost]}, {timeout, 4000}, 4]),
     io:format("Ignore the ERROR REPORTs above, they are supposed to be there.~n"),
     io:format("all tests passed :)~n").
 
@@ -30,7 +58,8 @@ do_tests(Malt) ->
     io:format("tests passed :)~n").
 
 do_error_tests(Malt) ->
-    {'EXIT', {badarith, _}} = (catch plists:map(fun (X) -> 1/X end, [1,2,3,0,4,5,6], Malt)),
+    {'EXIT', {badarith, _}} =
+	(catch plists:map(fun (X) -> 1/X end, [1,2,3,0,4,5,6], Malt)),
     check_leftovers(),
     if is_list(Malt) ->
 	    MaltList = Malt;
