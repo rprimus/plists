@@ -721,15 +721,34 @@ cluster_runmany(Fun, Fuse, [Task|TaskList], [N|Nodes], Running, Results) ->
 	{fuse, R1, R2} ->
 	    {recursive, FuseFunc} = Fuse,
 	    Fun2 = fun () ->
-			   Parent ! {self(), junknum, FuseFunc(R1, R2)}
+			   Parent ! {self(), fuse, FuseFunc(R1, R2)}
 		   end
     end,
-    Pid = spawn(N, Fun2),
+    Fun3 = fun () ->
+		   try Fun2()
+		   catch
+		         exit:siblingdied ->
+			   ok;
+			 exit:Reason ->
+			   Parent ! {self(), error, Reason};
+			 error:R ->
+			   Parent ! {self(), error, {R, erlang:get_stacktrace()}};
+			 throw:R ->
+			   Parent ! {self(), error, {{nocatch, R}, erlang:get_stacktrace()}}
+			 end
+	   end,
+    Pid = spawn(N, Fun3),
     erlang:monitor(process, Pid),
     cluster_runmany(Fun, Fuse, TaskList, Nodes, [{Pid, N, Task}|Running], Results);
 % We can't start a new process, but can watch over already running ones
 cluster_runmany(Fun, Fuse, TaskList, Nodes, Running, Results) when length(Running) > 0 ->
     receive
+	{_Pid, error, Reason} ->
+	    RunningPids = lists:map(fun ({Pid, _, _}) ->
+					    Pid
+				    end,
+				    Running),
+	    handle_error(junkvalue, Reason, RunningPids);
 	{Pid, Num, Result} ->
 	    % throw out the exit message, Reason should be
 	    % normal, noproc, or noconnection
@@ -750,6 +769,11 @@ cluster_runmany(Fun, Fuse, TaskList, Nodes, Running, Results) when length(Runnin
 	    {Running2, _DeadNode, Task} = delete_running(Pid, Running, []),
 	    cluster_runmany(Fun, Fuse, [Task|TaskList], Nodes,
 			    Running2, Results);
+	% could a noproc exit message come before the message from
+	% the process? we are assuming it can't.
+	% this clause is unlikely to get invoked due to cluster_runmany's
+        % spawned processes. It will still catch errors in mapreduce's
+        % reduce process, however.
 	{'DOWN', _, _, BadPid, Reason} when Reason =/= normal ->
 	    RunningPids = lists:map(fun ({Pid, _, _}) ->
 					    Pid
