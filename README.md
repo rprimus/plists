@@ -2,7 +2,7 @@ Erlang plists
 =============
 
 This is a fork of the Google Code SVN repository for plists.
-The original code is available at: (http://code.google.com/p/plists/).
+The original code is available at: <http://code.google.com/p/plists/>.
 
 Original Summary
 ----------------
@@ -24,6 +24,6 @@ module also include a simple mapreduce implementation, and the function
 runmany. All the other functions are implemented with runmany, which is as a
 generalization of parallel list operations.
 
-Documentation is available at (http://freeyourmind.googlepages.com/plists.html),
+Documentation is available at <http://freeyourmind.googlepages.com/plists.html>,
 and a blog post with some examples at
-(http://plists.wordpress.com/2007/09/20/introducing-plists-an-erlang-module-for-doing-list-operations-in-parallel/).
+<http://plists.wordpress.com/2007/09/20/introducing-plists-an-erlang-module-for-doing-list-operations-in-parallel/>.
